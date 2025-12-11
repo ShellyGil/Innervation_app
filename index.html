@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Innervation Index V6.2 (Web Edition)</title>
+    <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
+    <style>
+        :root { --bg: #222; --panel: #333; --text: #eee; --accent: #00d2ff; }
+        body { margin: 0; display: flex; height: 100vh; background: var(--bg); color: var(--text); font-family: Helvetica, sans-serif; overflow: hidden; }
+        
+        /* Sidebar */
+        #sidebar { width: 320px; background: var(--panel); padding: 20px; display: flex; flex-direction: column; gap: 10px; box-shadow: 2px 0 10px rgba(0,0,0,0.5); overflow-y: auto; z-index: 10; }
+        h1 { margin: 0 0 10px 0; font-size: 1.2rem; border-bottom: 2px solid #555; padding-bottom: 10px; }
+        .step-info { font-size: 0.85rem; color: #aaa; margin-bottom: 10px; line-height: 1.4; }
+        
+        /* Controls */
+        label { font-size: 0.8rem; font-weight: bold; margin-top: 5px; display: block; }
+        select, input[type="text"], input[type="number"] { width: 100%; padding: 5px; background: #444; border: 1px solid #555; color: white; margin-bottom: 5px; }
+        button { padding: 8px; background: #555; border: none; color: white; cursor: pointer; border-radius: 4px; font-weight: bold; transition: 0.2s; }
+        button:hover:not(:disabled) { background: #666; }
+        button:active:not(:disabled) { background: #777; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        button.primary { background: #006b8f; }
+        button.primary:hover:not(:disabled) { background: #0088b6; }
+        
+        /* Sliders */
+        .slider-group { display: flex; align-items: center; gap: 10px; }
+        input[type="range"] { flex-grow: 1; }
+        
+        /* Results Area */
+        #result-display { font-size: 1.4rem; color: var(--accent); text-align: center; font-weight: bold; margin: 15px 0; min-height: 1.5rem; }
+        .row { display: flex; gap: 5px; }
+        .row button { flex: 1; }
+
+        /* Canvas Area */
+        #main-view { flex-grow: 1; position: relative; background: #111; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+        canvas { position: absolute; image-rendering: pixelated; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+        
+        /* Overlay UI */
+        #loading { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); color: white; display: none; align-items: center; justify-content: center; z-index: 999; font-size: 2rem; }
+    </style>
+</head>
+<body>
+
+<div id="loading">Processing...</div>
+
+<div id="sidebar">
+    <h1>INN V6.2 Web</h1>
+    <div class="step-info">
+        1. Load Folder (Select files)<br>
+        2. Adjust Filters<br>
+        3. Draw ROI & Calculate<br>
+        4. Save to Log
+    </div>
+
+    <button onclick="document.getElementById('fileInput').click()">📂 Load Files</button>
+    <input type="file" id="fileInput" webkitdirectory multiple style="display:none" onchange="handleFiles(this.files)">
+    <div id="file-status" style="font-size:0.8rem; color:#aaa;">No files loaded</div>
+
+    <hr style="width:100%; border:0; border-top:1px solid #555;">
+
+    <label>Contrast: <span id="val-contrast">1.0</span></label>
+    <input type="range" min="0.5" max="3.0" step="0.1" value="1.0" oninput="updateFilters('contrast', this.value)">
+    
+    <label>Brightness: <span id="val-brightness">1.0</span></label>
+    <input type="range" min="0.5" max="3.0" step="0.1" value="1.0" oninput="updateFilters('brightness', this.value)">
+    
+    <label>Noise Blur: <span id="val-blur">0.0</span></label>
+    <input type="range" min="0.0" max="5.0" step="0.5" value="0.0" oninput="updateFilters('blur', this.value)">
+
+    <label style="display:flex; align-items:center; gap:5px; margin-top:10px;">
+        <input type="checkbox" id="chk-red" onchange="render()"> Show Threshold (Red)
+    </label>
+
+    <label>Threshold Algo</label>
+    <select id="algo-select" onchange="toggleAlgo()">
+        <option value="cutoff">1-0 Cut off</option>
+        <option value="otsu">Otsu</option>
+    </select>
+    <input type="number" id="manual-cutoff" value="128" placeholder="Threshold (0-255)">
+
+    <hr style="width:100%; border:0; border-top:1px solid #555;">
+
+    <div class="row">
+        <button id="btn-zoom-in" onclick="zoomStep(1.5)">🔍 In</button>
+        <button id="btn-zoom-out" onclick="zoomStep(0.66)">🔍 Out</button>
+        <button onclick="resetView()">Reset</button>
+    </div>
+
+    <button id="btn-draw" class="primary" style="margin-top:10px;" onclick="setMode('DRAW')">✏️ Start Drawing ROI</button>
+    <button id="btn-calc" onclick="calculateIndex()" disabled>Calculate Index</button>
+
+    <div id="result-display">--</div>
+
+    <div class="row">
+        <button id="btn-save" class="primary" onclick="saveAndNext()" disabled>💾 Save & Next</button>
+        <button id="btn-discard" onclick="nextImage()" disabled>❌ Skip</button>
+    </div>
+    
+    <hr style="width:100%; border:0; border-top:1px solid #555;">
+    <button onclick="downloadLog()" style="background:#444;">⬇️ Download Results .txt</button>
+</div>
+
+<div id="main-view" onmousedown="onMouseDown(event)" onmousemove="onMouseMove(event)" onmouseup="onMouseUp(event)" oncontextmenu="return false;">
+    <canvas id="imgCanvas"></canvas>
+    <canvas id="overlayCanvas"></canvas>
+</div>
+
+<script>
+    // --- STATE ---
+    let files = [];
+    let currentIndex = 0;
+    let originalImageData = null; // The raw pixel data
+    let processedCanvas = document.createElement('canvas'); // Off-screen canvas for filtered image
+    
+    // Viewport
+    let scale = 1.0;
+    let panX = 0; 
+    let panY = 0;
+    
+    // Tools
+    let mode = 'VIEW'; // VIEW, DRAW
+    let polyPoints = [];
+    
+    // Params
+    let params = { contrast: 1.0, brightness: 1.0, blur: 0.0 };
+    let resultsLog = "Filename\tIndex\n------------------------------\n";
+    let lastCalcValue = null;
+
+    const imgCanvas = document.getElementById('imgCanvas');
+    const overCanvas = document.getElementById('overlayCanvas');
+    const ctxImg = imgCanvas.getContext('2d');
+    const ctxOver = overCanvas.getContext('2d');
+
+    // --- FILE HANDLING ---
+    async function handleFiles(fileList) {
+        files = Array.from(fileList).filter(f => f.name.match(/\.(tif|tiff|jpg|png|jpeg)$/i)).sort((a,b) => a.name.localeCompare(b.name));
+        if (files.length === 0) return alert("No valid images found.");
+        
+        document.getElementById('file-status').innerText = `${files.length} images loaded.`;
+        currentIndex = 0;
+        await loadImage(currentIndex);
+    }
+
+    async function loadImage(index) {
+        if (index >= files.length) return alert("All images processed!");
+        
+        showLoading(true);
+        const file = files[index];
+        document.title = `INN Web - ${file.name}`;
+        document.getElementById('file-status').innerText = `(${index+1}/${files.length}) ${file.name}`;
+        
+        const buffer = await file.arrayBuffer();
+        let imgBitmap;
+
+        // Handle TIFF vs Standard
+        if (file.name.match(/\.(tif|tiff)$/i)) {
+            const ifds = UTIF.decode(buffer);
+            UTIF.decodeImage(buffer, ifds[0]);
+            const rgba = UTIF.toRGBA8(ifds[0]);
+            const tCanvas = document.createElement('canvas');
+            tCanvas.width = ifds[0].width;
+            tCanvas.height = ifds[0].height;
+            const tCtx = tCanvas.getContext('2d');
+            const imgData = tCtx.createImageData(tCanvas.width, tCanvas.height);
+            imgData.data.set(rgba);
+            tCtx.putImageData(imgData, 0, 0);
+            imgBitmap = tCanvas; // Use canvas as source
+        } else {
+            const blob = new Blob([buffer]);
+            imgBitmap = await createImageBitmap(blob);
+        }
+
+        // Store Original Data
+        const w = imgBitmap.width;
+        const h = imgBitmap.height;
+        
+        // Setup offscreen processing canvas
+        processedCanvas.width = w;
+        processedCanvas.height = h;
+        const pCtx = processedCanvas.getContext('2d');
+        pCtx.drawImage(imgBitmap, 0, 0);
+        
+        originalImageData = pCtx.getImageData(0, 0, w, h);
+        
+        // Reset UI
+        resetView(true);
+        render();
+        
+        // Button States
+        document.getElementById('btn-calc').disabled = true;
+        document.getElementById('btn-save').disabled = true;
+        document.getElementById('btn-discard').disabled = false;
+        document.getElementById('result-display').innerText = "--";
+        lastCalcValue = null;
+        mode = 'VIEW';
+        polyPoints = [];
+        
+        showLoading(false);
+    }
+
+    function showLoading(b) { document.getElementById('loading').style.display = b ? 'flex' : 'none'; }
+
+    // --- RENDERING ---
+    function updateFilters(key, val) {
+        params[key] = parseFloat(val);
+        document.getElementById(`val-${key}`).innerText = params[key];
+        render(); // Re-render logic
+    }
+
+    function applyFiltersToData(sourceData) {
+        // This creates a NEW ImageData with filters applied
+        // Note: For speed in JS, we do pixel math directly
+        const w = sourceData.width;
+        const h = sourceData.height;
+        const output = new ImageData(new Uint8ClampedArray(sourceData.data), w, h);
+        const data = output.data;
+        
+        // 1. Blur (Simple Box Approx if > 0)
+        // Note: Real Gaussian in JS is slow. We skip if 0.
+        // For 'Delicate' noise reduction, a small convolution is heavy. 
+        // We will use a visual CSS filter for the view, but for calculation we might need raw data.
+        // For this Web version, we will implement Contrast/Brightness mathematically.
+        
+        const contrastFactor = (259 * (params.contrast * 255 + 255)) / (255 * (259 - params.contrast * 255));
+        
+        for (let i = 0; i < data.length; i += 4) {
+            // Brightness
+            let r = data[i] * params.brightness;
+            let g = data[i+1] * params.brightness;
+            let b = data[i+2] * params.brightness;
+            
+            // Contrast
+            r = contrastFactor * (r - 128) + 128;
+            g = contrastFactor * (g - 128) + 128;
+            b = contrastFactor * (b - 128) + 128;
+
+            data[i] = r; data[i+1] = g; data[i+2] = b;
+        }
+        return output;
+    }
+
+    function render() {
+        if (!originalImageData) return;
+        
+        // 1. Process Image (Contrast/Bright)
+        // Optimization: In a real app we might cache this.
+        const filteredData = applyFiltersToData(originalImageData);
+        
+        // 2. Put on Processed Canvas
+        const pCtx = processedCanvas.getContext('2d');
+        pCtx.putImageData(filteredData, 0, 0);
+
+        // 3. Draw Red Threshold Overlay?
+        const showRed = document.getElementById('chk-red').checked;
+        if (showRed) {
+            const d = pCtx.getImageData(0,0, processedCanvas.width, processedCanvas.height);
+            const pix = d.data;
+            const isOtsu = document.getElementById('algo-select').value === 'otsu';
+            let thresh = parseFloat(document.getElementById('manual-cutoff').value);
+            
+            // Simple subset for Otsu? No, Otsu on whole image for view:
+            if (isOtsu) {
+                // Collect Grayscale
+                const gray = new Uint8Array(pix.length/4);
+                for(let i=0; i<pix.length/4; i++) gray[i] = pix[i*4]; // Use Red channel
+                thresh = getOtsu(gray);
+            }
+
+            for (let i=0; i<pix.length; i+=4) {
+                if (pix[i] > thresh) {
+                    pix[i] = 255; pix[i+1] = 0; pix[i+2] = 0; // RED
+                }
+            }
+            pCtx.putImageData(d, 0, 0);
+        }
+
+        // 4. Draw to Screen Canvas
+        // Resize Main Canvas to window
+        const container = document.getElementById('main-view');
+        imgCanvas.width = container.clientWidth;
+        imgCanvas.height = container.clientHeight;
+        overCanvas.width = container.clientWidth;
+        overCanvas.height = container.clientHeight;
+
+        ctxImg.clearRect(0, 0, imgCanvas.width, imgCanvas.height);
+        
+        // Apply Transform
+        ctxImg.save();
+        ctxImg.translate(imgCanvas.width/2 + panX, imgCanvas.height/2 + panY);
+        ctxImg.scale(scale, scale);
+        
+        // Apply Blur (using context filter is faster than pixel manip)
+        if (params.blur > 0) ctxImg.filter = `blur(${params.blur}px)`;
+        
+        ctxImg.drawImage(processedCanvas, -processedCanvas.width/2, -processedCanvas.height/2);
+        ctxImg.restore();
+
+        drawOverlay();
+    }
+
+    function drawOverlay() {
+        ctxOver.clearRect(0,0, overCanvas.width, overCanvas.height);
+        
+        // Draw Polygon
+        if (polyPoints.length > 0) {
+            ctxOver.save();
+            ctxOver.translate(overCanvas.width/2 + panX, overCanvas.height/2 + panY);
+            ctxOver.scale(scale, scale);
+            ctxOver.translate(-processedCanvas.width/2, -processedCanvas.height/2);
+
+            ctxOver.beginPath();
+            ctxOver.moveTo(polyPoints[0].x, polyPoints[0].y);
+            for(let i=1; i<polyPoints.length; i++) ctxOver.lineTo(polyPoints[i].x, polyPoints[i].y);
+            
+            // Closing line if drawing
+            ctxOver.strokeStyle = "yellow";
+            ctxOver.lineWidth = 2 / scale;
+            ctxOver.stroke();
+
+            // Dots
+            ctxOver.fillStyle = "cyan";
+            for(let p of polyPoints) {
+                ctxOver.beginPath();
+                ctxOver.arc(p.x, p.y, 4/scale, 0, Math.PI*2);
+                ctxOver.fill();
+            }
+
+            ctxOver.restore();
+        }
+    }
+
+    // --- INTERACTION ---
+    function zoomStep(factor) {
+        scale *= factor;
+        render();
+    }
+
+    function resetView(full = false) {
+        if (!originalImageData) return;
+        const cont = document.getElementById('main-view');
+        const imgW = originalImageData.width;
+        const imgH = originalImageData.height;
+        const scaleW = cont.clientWidth / imgW;
+        const scaleH = cont.clientHeight / imgH;
+        scale = Math.min(scaleW, scaleH) * 0.9;
+        panX = 0; panY = 0;
+        if(!full) render();
+    }
+
+    function setMode(m) {
+        mode = m;
+        polyPoints = [];
+        document.getElementById('btn-calc').disabled = true;
+        render();
+    }
+
+    function getImgCoords(e) {
+        const r = imgCanvas.getBoundingClientRect();
+        const cx = e.clientX - r.left;
+        const cy = e.clientY - r.top;
+        
+        // Inverse Transform
+        const centerX = imgCanvas.width/2 + panX;
+        const centerY = imgCanvas.height/2 + panY;
+        
+        const rawX = (cx - centerX) / scale + processedCanvas.width/2;
+        const rawY = (cy - centerY) / scale + processedCanvas.height/2;
+        
+        return { x: rawX, y: rawY };
+    }
+
+    let isDragging = false;
+    let dragStart = {x:0, y:0};
+
+    function onMouseDown(e) {
+        if (e.button === 2) { // Right click to close poly
+            if (mode === 'DRAW' && polyPoints.length > 2) {
+                // Close loop
+                polyPoints.push(polyPoints[0]); 
+                document.getElementById('btn-calc').disabled = false;
+                render();
+            }
+            return;
+        }
+
+        if (mode === 'DRAW') {
+            const p = getImgCoords(e);
+            polyPoints.push(p);
+            render();
+        } else {
+            isDragging = true;
+            dragStart = { x: e.clientX - panX, y: e.clientY - panY };
+        }
+    }
+
+    function onMouseMove(e) {
+        if (isDragging && mode === 'VIEW') {
+            panX = e.clientX - dragStart.x;
+            panY = e.clientY - dragStart.y;
+            render();
+        }
+    }
+
+    function onMouseUp() { isDragging = false; }
+
+    // --- MATH & LOGIC ---
+    function getOtsu(pixels) {
+        let hist = new Array(256).fill(0);
+        for(let p of pixels) hist[p]++;
+        
+        let total = pixels.length;
+        let sum = 0;
+        for(let i=0; i<256; i++) sum += i * hist[i];
+        
+        let sumB = 0, wB = 0, wF = 0;
+        let varMax = 0, threshold = 0;
+        
+        for(let t=0; t<256; t++) {
+            wB += hist[t];
+            if (wB === 0) continue;
+            wF = total - wB;
+            if (wF === 0) break;
+            
+            sumB += t * hist[t];
+            let mB = sumB / wB;
+            let mF = (sum - sumB) / wF;
+            let varBetween = wB * wF * (mB - mF) * (mB - mF);
+            
+            if (varBetween > varMax) {
+                varMax = varBetween;
+                threshold = t;
+            }
+        }
+        return threshold;
+    }
+
+    function isInside(x, y, poly) {
+        // Ray casting alg
+        let inside = false;
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+            const xi = poly[i].x, yi = poly[i].y;
+            const xj = poly[j].x, yj = poly[j].y;
+            const intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+            if (intersect) inside = !inside;
+        }
+        return inside;
+    }
+
+    function calculateIndex() {
+        if (!polyPoints.length) return;
+        showLoading(true);
+
+        setTimeout(() => {
+            // 1. Get filtered data (no red overlay)
+            const pCtx = processedCanvas.getContext('2d');
+            // We need to re-apply filters without the red overlay if it was on
+            // But applyFiltersToData returns clean data.
+            const cleanData = applyFiltersToData(originalImageData); 
+            const pix = cleanData.data;
+            const w = cleanData.width;
+            
+            let validPixels = [];
+            
+            // 2. Bounding box to optimize
+            let minX=w, maxX=0, minY=cleanData.height, maxY=0;
+            for(let p of polyPoints) {
+                if(p.x < minX) minX = Math.floor(p.x);
+                if(p.x > maxX) maxX = Math.ceil(p.x);
+                if(p.y < minY) minY = Math.floor(p.y);
+                if(p.y > maxY) maxY = Math.ceil(p.y);
+            }
+            
+            // 3. Scan ROI
+            for(let y=minY; y<maxY; y++) {
+                for(let x=minX; x<maxX; x++) {
+                    if (isInside(x, y, polyPoints)) {
+                        const idx = (y*w + x) * 4;
+                        // Use Red channel as grayscale value
+                        validPixels.push(pix[idx]); 
+                    }
+                }
+            }
+
+            if (validPixels.length === 0) {
+                alert("Area too small");
+                showLoading(false);
+                return;
+            }
+
+            // 4. Threshold
+            let thresh = 0;
+            if (document.getElementById('algo-select').value === 'otsu') {
+                thresh = getOtsu(validPixels);
+            } else {
+                thresh = parseFloat(document.getElementById('manual-cutoff').value);
+            }
+            
+            let count = validPixels.filter(v => v > thresh).length;
+            let result = (count / validPixels.length) * 100;
+            
+            lastCalcValue = result;
+            document.getElementById('result-display').innerText = result.toFixed(4) + "%";
+            document.getElementById('btn-save').disabled = false;
+            
+            // Draw result overlay (optional - flash)
+            showLoading(false);
+        }, 50); // Small delay to let UI render loading
+    }
+
+    function saveAndNext() {
+        if (lastCalcValue === null) return;
+        resultsLog += `${files[currentIndex].name}\t${lastCalcValue.toFixed(6)}\n`;
+        nextImage();
+    }
+
+    function nextImage() {
+        currentIndex++;
+        loadImage(currentIndex);
+    }
+
+    function downloadLog() {
+        const blob = new Blob([resultsLog], {type: 'text/plain'});
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'innervation_results.txt';
+        a.click();
+    }
+
+    function toggleAlgo() {
+        const isMan = document.getElementById('algo-select').value === 'cutoff';
+        document.getElementById('manual-cutoff').style.display = isMan ? 'block' : 'none';
+        if(document.getElementById('chk-red').checked) render();
+    }
+</script>
+</body>
+</html>
